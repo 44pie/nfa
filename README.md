@@ -25,11 +25,13 @@ NFA - forked from NucleiFuzzer + Arjun Parameter Discovery
 
 ## 🚀 Features
 
-- **Multi-threaded Execution** - Scan multiple domains in parallel with configurable workers
+- **Multi-threaded Execution** - Scan multiple domains in parallel with configurable workers (nfarun.py)
+- **Direct Scanning** - Single domain scanning with nfa.sh
 - **Real-time Statistics** - Live monitoring of URL collection, validation, and parameter discovery
 - **Comprehensive URL Collection** - Uses 5 tools (ParamSpider, waybackurls, gauplus, hakrawler, katana)
 - **Live URL Validation** - httpx validation with multiple status codes
 - **Parameter Discovery** - Arjun integration for finding hidden parameters
+- **Optional Nuclei Scanning** - Enable with `--nuclei` flag for vulnerability detection
 - **Automatic Cleanup** - Removes temporary files, keeps only final results
 - **No Timeouts** - Runs until completion for maximum results
 
@@ -127,6 +129,127 @@ python3 nfarun.py -l domains.txt -w 8 -o scan2
 # Single domain in a file
 echo "example.com" > domain.txt
 python3 nfarun.py -l domain.txt -o results
+```
+
+---
+
+## 🎯 Using nfa.sh Directly
+
+You can also run `nfa.sh` directly for single domain scanning:
+
+### Basic Scan (URL Collection + Validation + Arjun)
+
+```bash
+# Scan single domain
+./nfa.sh -d example.com -o results
+
+# With verbose output
+./nfa.sh -d example.com -o results -v
+
+# Keep temporary files for debugging
+./nfa.sh -d example.com -o results -k
+```
+
+### Full Scan with Nuclei (Vulnerability Detection)
+
+**Important:** By default, `nfa.sh` does **NOT** run Nuclei scanning. To enable vulnerability detection, use the `--nuclei` flag:
+
+```bash
+# Full scan with Nuclei vulnerability detection
+./nfa.sh -d example.com -o results --nuclei
+
+# With verbose output
+./nfa.sh -d example.com -o results --nuclei -v
+```
+
+### nfa.sh Command Options
+
+```
+Usage: ./nfa.sh [OPTIONS]
+
+Required:
+  -d DOMAIN           Single domain to scan
+  OR
+  -f FILE             File with domain list (one per line)
+
+Required:
+  -o OUTPUT           Output folder
+
+Optional:
+  --nuclei            Enable Nuclei vulnerability scanning (disabled by default)
+  -v                  Verbose mode (show detailed output)
+  -k                  Keep temporary files (don't cleanup)
+  -h, --help          Show help message
+```
+
+### What nfa.sh Does
+
+**Always Executed (Default Pipeline):**
+
+1. **URL Collection** - Gathers URLs from 5 sources:
+   - ParamSpider - Parameter-focused crawling
+   - waybackurls - Wayback Machine archive
+   - gauplus - Common Crawl archive  
+   - hakrawler - Active web crawling
+   - katana - Fast active crawling
+
+2. **Deduplication** - Uses `uro` to remove duplicate URLs
+
+3. **Validation** - Uses `httpx` to find live URLs (status codes: 200, 204, 301, 302, 401, 403, 405, 500, 502, 503, 504)
+
+4. **Parameter Discovery** - Uses `Arjun` to find hidden parameters
+
+**Only with `--nuclei` flag:**
+
+5. **Vulnerability Scanning** - Uses `Nuclei` with comprehensive templates to detect security issues
+
+### Output Files (nfa.sh)
+
+**Without --nuclei:**
+```
+results/
+└── example.com_validated.txt      # Live URLs only
+└── example.com_arjun.txt          # Discovered parameters
+└── nfa.log                        # Execution log
+```
+
+**With --nuclei:**
+```
+results/
+└── example.com_validated.txt      # Live URLs
+└── example.com_arjun.txt          # Discovered parameters
+└── example.com_nuclei_results.txt # Vulnerabilities found!
+└── nfa.log                        # Execution log
+```
+
+**With -k (keep temp):**
+```
+results/
+└── example.com_raw.txt            # All collected URLs
+└── example.com_dedup.txt          # Deduplicated URLs
+└── example.com_validated.txt      # Live URLs
+└── example.com_arjun.txt          # Parameters
+└── nfa.log                        # Log
+```
+
+### Examples
+
+```bash
+# Quick scan - URL collection and validation only
+./nfa.sh -d target.com -o quick_scan
+
+# Full security assessment with vulnerability detection
+./nfa.sh -d target.com -o full_scan --nuclei -v
+
+# Multiple domains without Nuclei (faster)
+echo -e "site1.com\nsite2.com\nsite3.com" > targets.txt
+./nfa.sh -f targets.txt -o mass_scan
+
+# Multiple domains with Nuclei (complete security scan)
+./nfa.sh -f targets.txt -o mass_scan --nuclei
+
+# Debug mode - keep all intermediate files
+./nfa.sh -d example.com -o debug -k -v
 ```
 
 ---
