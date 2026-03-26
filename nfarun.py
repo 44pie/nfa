@@ -188,7 +188,8 @@ class NFARunner:
             env['PATH'] = f"{go_bin}:{local_bin}:{clean_path}"
             
             # Build command - nuclei is on by default in nfa.sh
-            cmd = ["bash", "nfa.sh", "-d", domain, "-o", domain_output, "-k"]
+            nfa_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nfa.sh")
+            cmd = ["bash", nfa_script, "-d", domain, "-o", domain_output, "-k"]
             if self.use_arjun:
                 cmd.append("--arjun")
             if self.resolvers:
