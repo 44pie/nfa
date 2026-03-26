@@ -24,11 +24,9 @@ class FileMonitor:
         self.count = 0
         
     def update_count(self):
-        """Read new lines and update count"""
         try:
             if not os.path.exists(self.filepath):
                 return self.count
-                
             with open(self.filepath, 'r') as f:
                 f.seek(self.offset)
                 new_lines = sum(1 for line in f if line.strip())
@@ -39,7 +37,6 @@ class FileMonitor:
         return self.count
         
     def reset(self):
-        """Reset monitor for new domain"""
         self.offset = 0
         self.count = 0
 
@@ -63,17 +60,13 @@ class WorkerStats:
         self.validated = 0
         self.arjun = 0
         self.is_working = True
-        
-        # Initialize file monitors
         self.raw_monitor = FileMonitor(os.path.join(output_dir, f"{domain}_raw.txt"))
         self.validated_monitor = FileMonitor(os.path.join(output_dir, f"{domain}_validated.txt"))
         self.arjun_monitor = FileMonitor(os.path.join(output_dir, f"{domain}_arjun.txt"))
         
     def update_realtime_stats(self):
-        """Update stats from files in real-time"""
         if not self.is_working:
             return
-        
         if self.raw_monitor:
             self.raw = self.raw_monitor.update_count()
         if self.validated_monitor:
@@ -92,10 +85,12 @@ class WorkerStats:
         self.arjun = 0
 
 class NFARunner:
-    def __init__(self, domains_file, num_workers, output_folder):
+    def __init__(self, domains_file, num_workers, output_folder, resolvers=None, use_arjun=False):
         self.domains_file = domains_file
         self.num_workers = num_workers
         self.output_folder = output_folder
+        self.resolvers = resolvers
+        self.use_arjun = use_arjun
         self.domain_queue = queue.Queue()
         self.worker_stats = {}
         self.lock = threading.Lock()
@@ -124,7 +119,6 @@ class NFARunner:
             "SP          SP             SP   ",
             "Y           Y              Y    "
         ]
-        
         for line in banner:
             print(f"{CYAN}{line}{RESET}")
         print()
@@ -145,17 +139,14 @@ class NFARunner:
         Path(self.output_folder).mkdir(parents=True, exist_ok=True)
         
     def parse_nfa_output(self, line, stats):
-        # Just for real-time display - final counts from files
         pass
                 
     def print_stats_table(self):
         with self.lock:
-            # Update all real-time stats before printing
             for worker_id in self.worker_stats.keys():
                 self.worker_stats[worker_id].update_realtime_stats()
             
             os.system('clear')
-            
             self.print_banner()
         
             print(f"[+] Total: {self.total_domains} | Completed: {self.completed_domains} | Failed: {self.failed_domains} | In Queue: {self.domain_queue.qsize()}")
@@ -167,7 +158,6 @@ class NFARunner:
             for worker_id in sorted(self.worker_stats.keys()):
                 stats = self.worker_stats[worker_id]
                 domain_display = stats.domain if stats.domain != "Idle" else "-"
-                    
                 print(f"W{worker_id:<7} {domain_display:<50} {stats.raw:<10} {stats.validated:<12} {stats.arjun:<8}")
             
             print('='*90)
@@ -189,19 +179,20 @@ class NFARunner:
             with self.lock:
                 stats.reset_for_domain(domain, domain_output)
             
-            # Setup environment for subprocess
             env = os.environ.copy()
-            # CRITICAL: Add Go bin FIRST to prioritize ProjectDiscovery tools over Python packages
             go_bin = os.path.expanduser('~/go/bin')
             local_bin = os.path.expanduser('~/.local/bin')
-            # Remove .pythonlibs/bin from PATH to avoid Python httpx conflict
             path_parts = env.get('PATH', '').split(':')
             path_parts = [p for p in path_parts if '.pythonlibs' not in p]
             clean_path = ':'.join(path_parts)
             env['PATH'] = f"{go_bin}:{local_bin}:{clean_path}"
             
-            # Always keep temp files for nfarun to read stats
+            # Build command - nuclei is on by default in nfa.sh
             cmd = ["bash", "nfa.sh", "-d", domain, "-o", domain_output, "-k"]
+            if self.use_arjun:
+                cmd.append("--arjun")
+            if self.resolvers:
+                cmd.extend(["-r", self.resolvers])
             
             success = False
             error_lines = []
@@ -220,7 +211,6 @@ class NFARunner:
                     for line in process.stdout:
                         with self.lock:
                             self.parse_nfa_output(line, stats)
-                        
                         if "error" in line.lower() or "failed" in line.lower():
                             error_lines.append(line.strip())
                 
@@ -236,17 +226,14 @@ class NFARunner:
             except Exception as e:
                 print(f"{RED}[W{worker_id}] Exception for {domain}: {str(e)}{RESET}")
             
-            # Final update from files after process completes
             with self.lock:
                 stats.update_realtime_stats()
                 
-                # Domain completed only when Arjun finished and worker takes new domain
                 if success:
                     self.completed_domains += 1
                 else:
                     self.failed_domains += 1
                 
-                # Cleanup temporary files after domain completion
                 try:
                     raw_file = os.path.join(domain_output, f"{domain}_raw.txt")
                     dedup_file = os.path.join(domain_output, f"{domain}_dedup.txt")
@@ -257,7 +244,6 @@ class NFARunner:
                 except Exception:
                     pass
                     
-                # Set idle AFTER incrementing completed (worker transitioning to next)
                 stats.set_idle()
                 
             self.domain_queue.task_done()
@@ -275,8 +261,11 @@ class NFARunner:
         domains = self.load_domains()
         
         print(f"{GREEN}[+] Loaded {len(domains)} domains{RESET}")
-        print(f"{CYAN}[*] Workers: {self.num_workers}{RESET}")
-        print(f"{CYAN}[*] Output folder: {self.output_folder}{RESET}")
+        print(f"{CYAN}[*] Workers:  {self.num_workers}{RESET}")
+        print(f"{CYAN}[*] Output:   {self.output_folder}{RESET}")
+        print(f"{CYAN}[*] Nuclei:   ON (default){RESET}")
+        print(f"{CYAN}[*] Arjun:    {'ON' if self.use_arjun else 'OFF'}{RESET}")
+        print(f"{CYAN}[*] Resolvers: {self.resolvers if self.resolvers else 'none'}{RESET}")
         
         self.create_output_folder()
         
@@ -318,22 +307,37 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  ./nfarun -l domains.txt -w 4 -o results
-  ./nfarun -l targets.txt -w 8 -o scan_output
+  # nuclei only, 4 workers
+  ./nfarun.py -l domains.txt -w 4 -o results/
+
+  # nuclei + custom resolvers, 8 workers
+  ./nfarun.py -l domains.txt -w 8 -o results/ -r /path/to/resolvers.txt
+
+  # nuclei + arjun, 4 workers
+  ./nfarun.py -l domains.txt -w 4 -o results/ --arjun
+
+  # nuclei + arjun + resolvers
+  ./nfarun.py -l domains.txt -w 4 -o results/ --arjun -r resolvers.txt
         """
     )
     
-    parser.add_argument('-l', '--list', required=True, help='File containing list of domains (one per line)')
+    parser.add_argument('-l', '--list', required=True, help='File with list of domains (one per line)')
     parser.add_argument('-w', '--workers', type=int, default=4, help='Number of parallel workers (default: 4)')
     parser.add_argument('-o', '--output', required=True, help='Output folder to save results')
+    parser.add_argument('-r', '--resolvers', default=None, help='Path to resolvers file for Nuclei')
+    parser.add_argument('--arjun', action='store_true', help='Enable Arjun parameter discovery (disabled by default)')
     
     args = parser.parse_args()
     
     if not os.path.isfile(args.list):
         print(f"{RED}[!] Error: File {args.list} does not exist{RESET}")
         sys.exit(1)
+    
+    if args.resolvers and not os.path.isfile(args.resolvers):
+        print(f"{RED}[!] Error: Resolvers file {args.resolvers} does not exist{RESET}")
+        sys.exit(1)
         
-    runner = NFARunner(args.list, args.workers, args.output)
+    runner = NFARunner(args.list, args.workers, args.output, resolvers=args.resolvers, use_arjun=args.arjun)
     
     try:
         runner.run()

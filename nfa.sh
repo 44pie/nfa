@@ -46,8 +46,10 @@ LOG_FILE=""
 VERBOSE=false
 KEEP_TEMP=false
 RATE_LIMIT=50
+RESOLVERS=""
 RESULT_FILE=""
-RUN_NUCLEI=false
+RUN_NUCLEI=true
+RUN_ARJUN=false
 
 # Help menu
 display_help() {
@@ -59,10 +61,12 @@ display_help() {
     echo "  -f, --file <filename>   Scan multiple domains/URLs from a file"
     echo "  -o, --output <folder>   Output folder (default: ./output)"
     echo "  -t, --templates <path>  Custom Nuclei templates directory"
-    echo "  --nuclei                Enable Nuclei vulnerability scanning"
+    echo "  --arjun                 Enable Arjun parameter discovery (disabled by default)"
+    echo "  --no-nuclei             Disable Nuclei vulnerability scanning"
+    echo "  -r, --resolvers <file>  Path to resolvers file for Nuclei"
+    echo "  --rate <limit>          Set rate limit for Nuclei (default: 50)"
     echo "  -v, --verbose           Enable verbose output (logs to terminal)"
     echo "  -k, --keep-temp         Keep temporary files after execution"
-    echo "  -r, --rate <limit>      Set rate limit for Nuclei (default: 50)"
     exit 0
 }
 
@@ -123,10 +127,12 @@ while [[ $# -gt 0 ]]; do
         -f|--file) FILENAME="$2"; shift 2 ;;
         -o|--output) OUTPUT_FOLDER="$2"; shift 2 ;;
         -t|--templates) TEMPLATE_DIR="$2"; shift 2 ;;
-        --nuclei) RUN_NUCLEI=true; shift ;;
+        --arjun) RUN_ARJUN=true; shift ;;
+        --no-nuclei) RUN_NUCLEI=false; shift ;;
+        -r|--resolvers) RESOLVERS="$2"; shift 2 ;;
+        --rate) RATE_LIMIT="$2"; shift 2 ;;
         -v|--verbose) VERBOSE=true; shift ;;
         -k|--keep-temp) KEEP_TEMP=true; shift ;;
-        -r|--rate) RATE_LIMIT="$2"; shift 2 ;;
         *) log "ERROR" "Unknown option: $1"; display_help ;;
     esac
 done
@@ -135,6 +141,12 @@ done
 if [ -z "$DOMAIN" ] && [ -z "$FILENAME" ]; then
     log "ERROR" "Please provide a domain (-d) or file (-f)."
     display_help
+fi
+
+# Validate resolvers file if provided
+if [ -n "$RESOLVERS" ] && [ ! -f "$RESOLVERS" ]; then
+    echo "ERROR: Resolvers file not found: $RESOLVERS"
+    exit 1
 fi
 
 # Setup
@@ -166,21 +178,23 @@ check_prerequisite "waybackurls" "go install github.com/tomnomnom/waybackurls@la
 check_prerequisite "gauplus" "go install github.com/bp0lr/gauplus@latest"
 check_prerequisite "hakrawler" "go install github.com/hakluke/hakrawler@latest"
 clone_repo "https://github.com/0xKayala/ParamSpider" "$HOME_DIR/ParamSpider"
-clone_repo "https://github.com/s0md3v/Arjun.git" "$HOME_DIR/Arjun"
 
-# Check if arjun command exists, if not create symlink
-if ! command -v arjun &> /dev/null; then
-    if [ -f "$HOME_DIR/Arjun/arjun.py" ]; then
-        mkdir -p "$HOME/.local/bin"
-        echo '#!/bin/bash' > "$HOME/.local/bin/arjun"
-        echo "python3 $HOME_DIR/Arjun/arjun.py \"\$@\"" >> "$HOME/.local/bin/arjun"
-        chmod +x "$HOME/.local/bin/arjun"
-        export PATH="$HOME/.local/bin:$PATH"
-        log "INFO" "Created arjun wrapper in $HOME/.local/bin/arjun"
+# Arjun setup only if enabled
+if [ "$RUN_ARJUN" = true ]; then
+    clone_repo "https://github.com/s0md3v/Arjun.git" "$HOME_DIR/Arjun"
+    if ! command -v arjun &> /dev/null; then
+        if [ -f "$HOME_DIR/Arjun/arjun.py" ]; then
+            mkdir -p "$HOME/.local/bin"
+            echo '#!/bin/bash' > "$HOME/.local/bin/arjun"
+            echo "python3 $HOME_DIR/Arjun/arjun.py \"\$@\"" >> "$HOME/.local/bin/arjun"
+            chmod +x "$HOME/.local/bin/arjun"
+            export PATH="$HOME/.local/bin:$PATH"
+            log "INFO" "Created arjun wrapper in $HOME/.local/bin/arjun"
+        fi
     fi
 fi
 
-# Install nuclei only if --nuclei flag is set
+# Nuclei setup
 if [ "$RUN_NUCLEI" = true ]; then
     check_prerequisite "nuclei" "go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     clone_repo "https://github.com/projectdiscovery/nuclei-templates.git" "$HOME_DIR/nuclei-templates"
@@ -266,7 +280,11 @@ run_arjun() {
 run_nuclei() {
     local url_file="$1"
     echo -e "${GREEN}Running Nuclei vulnerability scan...${RESET}"
-    nuclei -l "$url_file" -t "$TEMPLATE_DIR" -dast -rl "$RATE_LIMIT" -o "$RESULT_FILE"
+    local nuclei_cmd="nuclei -l \"$url_file\" -t \"$TEMPLATE_DIR\" -dast -rl \"$RATE_LIMIT\" -o \"$RESULT_FILE\""
+    if [ -n "$RESOLVERS" ]; then
+        nuclei_cmd="nuclei -l \"$url_file\" -t \"$TEMPLATE_DIR\" -dast -rl \"$RATE_LIMIT\" -r \"$RESOLVERS\" -o \"$RESULT_FILE\""
+    fi
+    eval "$nuclei_cmd"
 }
 
 # Main logic
@@ -281,7 +299,10 @@ if [ -n "$DOMAIN" ]; then
     collect_urls "$DOMAIN" "$RAW_FILE"
     validate_urls "$RAW_FILE" "$DEDUP_FILE"
     validate_httpx "$DEDUP_FILE" "$VALIDATED_FILE"
-    run_arjun "$VALIDATED_FILE" "$ARJUN_FILE"
+
+    if [ "$RUN_ARJUN" = true ]; then
+        run_arjun "$VALIDATED_FILE" "$ARJUN_FILE"
+    fi
     
     if [ "$RUN_NUCLEI" = true ]; then
         run_nuclei "$VALIDATED_FILE"
@@ -308,7 +329,10 @@ elif [ -n "$FILENAME" ]; then
     
     validate_urls "$RAW_FILE" "$DEDUP_FILE"
     validate_httpx "$DEDUP_FILE" "$VALIDATED_FILE"
-    run_arjun "$VALIDATED_FILE" "$ARJUN_FILE"
+
+    if [ "$RUN_ARJUN" = true ]; then
+        run_arjun "$VALIDATED_FILE" "$ARJUN_FILE"
+    fi
     
     if [ "$RUN_NUCLEI" = true ]; then
         run_nuclei "$VALIDATED_FILE"
@@ -321,14 +345,13 @@ if [ "$KEEP_TEMP" = false ]; then
     rm -f "$OUTPUT_FOLDER"/*_raw.txt "$OUTPUT_FOLDER"/*_dedup.txt 2>/dev/null
 fi
 
-if [ "$RUN_NUCLEI" = true ]; then
-    log "INFO" "Scanning completed. Results saved in $RESULT_FILE."
-    echo -e "${RED}NFA scanning completed!${RESET}"
+echo -e "${RED}NFA scanning completed!${RESET}"
+if [ "$RUN_ARJUN" = true ]; then
     echo -e "${GREEN}→ Arjun results: $ARJUN_FILE${RESET}"
+fi
+if [ "$RUN_NUCLEI" = true ]; then
+    log "INFO" "Nuclei results saved in $RESULT_FILE."
     echo -e "${GREEN}→ Nuclei results: $RESULT_FILE${RESET}"
 else
-    log "INFO" "URL collection, validation and Arjun scanning completed."
-    echo -e "${GREEN}NFA scanning completed!${RESET}"
     echo -e "${GREEN}→ Validated URLs: $VALIDATED_FILE${RESET}"
-    echo -e "${GREEN}→ Arjun results: $ARJUN_FILE${RESET}"
 fi
